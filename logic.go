@@ -1,13 +1,12 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
-	"math/rand"
-	"slices"
-	"time"
+        "encoding/json"
+        "errors"
+        "math/rand"
+        "time"
 
-	"gorm.io/gorm"
+        "gorm.io/gorm"
 )
 
 func drawQuestions(allIDs []string, count int, seed *int64) []string {
@@ -26,14 +25,24 @@ func drawQuestions(allIDs []string, count int, seed *int64) []string {
 }
 
 func isCorrectAllOrNothing(selected, correct []string) bool {
-	if len(selected) != len(correct) { return false }
-	for _, k := range selected {
-		if !slices.Contains(correct, k) {
-			return false
-		}
-	}
-	// sprawdzone też równoliczne
-	return true
+        if len(selected) != len(correct) {
+                return false
+        }
+        // treat both inputs as sets to avoid accepting duplicates in `selected`
+        selSet := make(map[string]struct{}, len(selected))
+        for _, k := range selected {
+                selSet[k] = struct{}{}
+        }
+        // if there were duplicates in `selected`, the set will be smaller
+        if len(selSet) != len(correct) {
+                return false
+        }
+        for _, k := range correct {
+                if _, ok := selSet[k]; !ok {
+                        return false
+                }
+        }
+        return true
 }
 
 func computeExamScore(db *gorm.DB, examID string) (float64, int, int, error) {
