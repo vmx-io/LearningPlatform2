@@ -10,17 +10,20 @@ import (
 )
 
 type StatsResponse struct {
-	TotalExams         int64              `json:"totalExams"`
-	CompletedExams     int64              `json:"completedExams"`
-	AverageScore       *float64           `json:"averageScore,omitempty"`
-	TotalAnswers       int64              `json:"totalAnswers"`
-	CorrectAnswers     int64              `json:"correctAnswers"`
-	AccuracyOverall    *float64           `json:"accuracyOverall,omitempty"`
-	AnswersLast30d     int64              `json:"answersLast30d"`
-	CorrectLast30d     int64              `json:"correctLast30d"`
-	AccuracyLast30d    *float64           `json:"accuracyLast30d,omitempty"`
-	AccuracyByTag      map[string]float64 `json:"accuracyByTag,omitempty"` // tag -> percent
-	AnsweredByTag      map[string]int64   `json:"answeredByTag,omitempty"` // tag -> count
+	TotalExams      int64              `json:"totalExams"`
+	CompletedExams  int64              `json:"completedExams"`
+	AverageScore    *float64           `json:"averageScore,omitempty"`
+	TotalAnswers    int64              `json:"totalAnswers"`
+	CorrectAnswers  int64              `json:"correctAnswers"`
+	AccuracyOverall *float64           `json:"accuracyOverall,omitempty"`
+	AnswersLast30d  int64              `json:"answersLast30d"`
+	CorrectLast30d  int64              `json:"correctLast30d"`
+	AccuracyLast30d *float64           `json:"accuracyLast30d,omitempty"`
+	AccuracyByTag   map[string]float64 `json:"accuracyByTag,omitempty"` // tag -> percent
+	AnsweredByTag   map[string]int64   `json:"answeredByTag,omitempty"` // tag -> count
+	PassedExams     int64              `json:"passedExams"`
+	FailedExams     int64              `json:"failedExams"`
+	PassRate        *float64           `json:"passRate,omitempty"`
 }
 
 func Stats(db *gorm.DB) gin.HandlerFunc {
@@ -43,15 +46,39 @@ func Stats(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
 			return
 		}
-		if err := db.Model(&Exam{}).Where("user_id = ? AND finished_at IS NOT NULL", uid).Count(&resp.CompletedExams).Error; err != nil {
+		if err := db.Model(&Exam{}).
+			Where("user_id = ? AND finished_at IS NOT NULL", uid).
+			Count(&resp.CompletedExams).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
 			return
 		}
+
+		// pass/fail (cut score = 61%)
+		const passCut = 61.0
+		if err := db.Model(&Exam{}).
+			Where("user_id = ? AND score_percent IS NOT NULL AND score_percent >= ?", uid, passCut).
+			Count(&resp.PassedExams).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
+			return
+		}
+		if err := db.Model(&Exam{}).
+			Where("user_id = ? AND score_percent IS NOT NULL AND score_percent < ?", uid, passCut).
+			Count(&resp.FailedExams).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
+			return
+		}
+		if resp.CompletedExams > 0 {
+			pr := float64(resp.PassedExams) * 100.0 / float64(resp.CompletedExams)
+			resp.PassRate = &pr
+		}
+
 		// average score (only finished exams)
 		type RowAvg struct{ Avg *float64 }
 		var rowAvg RowAvg
-		_ = db.Table("exams").Where("user_id = ? AND score_percent IS NOT NULL", uid).
-			Select("AVG(score_percent) as avg").Scan(&rowAvg).Error
+		_ = db.Table("exams").
+			Where("user_id = ? AND score_percent IS NOT NULL", uid).
+			Select("AVG(score_percent) as avg").
+			Scan(&rowAvg).Error
 		resp.AverageScore = rowAvg.Avg
 
 		// overall answers & correct (join answers->exams to filter by user)
@@ -99,8 +126,8 @@ func Stats(db *gorm.DB) gin.HandlerFunc {
 		// accuracy per tag (CSV in questions.Tags)
 		// Load answers + their questions' tags, then aggregate in Go.
 		type AnsJoin struct {
-			IsCorrect  bool
-			Tags       *string // CSV or JSON-ish string; we treat it as CSV "OMS,SOLR"
+			IsCorrect bool
+			Tags      *string // CSV or JSON-ish string; we treat it as CSV "OMS,SOLR"
 		}
 		var rows []AnsJoin
 		_ = db.Table("answers a").
@@ -121,10 +148,14 @@ func Stats(db *gorm.DB) gin.HandlerFunc {
 			seen := map[string]bool{}
 			for _, p := range parts {
 				tag := strings.TrimSpace(p)
-				if tag == "" || seen[tag] { continue }
+				if tag == "" || seen[tag] {
+					continue
+				}
 				seen[tag] = true
 				tagTotals[tag]++
-				if r.IsCorrect { tagCorrect[tag]++ }
+				if r.IsCorrect {
+					tagCorrect[tag]++
+				}
 			}
 		}
 		for tag, tot := range tagTotals {

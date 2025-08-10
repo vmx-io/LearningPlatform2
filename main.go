@@ -3,7 +3,10 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
+	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,7 +20,7 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	// 2) Seed (jeśli pusto)
+	// 2) Seed (if empty)
 	if isEmpty, _ := IsQuestionTableEmpty(db); isEmpty {
 		path := "data/questions.json"
 		if _, err := os.Stat(path); err == nil {
@@ -33,30 +36,66 @@ func main() {
 	// 3) Router
 	r := gin.Default()
 
-	// secureCookies: w dev zwykle false; w prod za HTTPS → true
-	r.Use(EnsureUser(db, false))
+	// --- CORS: Allow GH Pages + any localhost:port ---
+	const ghOriginHttps = "https://vmx-io.github.io" // change if you move to a custom domain
+	const ghOriginHttp = "http://vmx-io.github.io"   // change if you move to a custom domain
+	r.Use(cors.New(cors.Config{
+		AllowOriginFunc: func(origin string) bool {
+			if origin == ghOriginHttp || origin == ghOriginHttps {
+				return true
+			}
+			// allow any http://localhost:PORT during development
+			if strings.HasPrefix(origin, "http://localhost:") {
+				return true
+			}
+			return false
+		},
+		AllowMethods:     []string{"GET", "POST", "PUT", "OPTIONS"},
+		AllowHeaders:     []string{"Content-Type", "X-Public-Id"},
+		ExposeHeaders:    []string{"X-Public-Id"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 
+	// --- Cookie security config ---
+	secureCookies := os.Getenv("SECURE_COOKIES") == "true" // set to true on Cloud Run / HTTPS
+
+	// --- User middleware (supports X-Public-Id header in your updated usermw.go) ---
+	r.Use(EnsureUser(db, secureCookies))
+
+	// Optional health check
+	r.GET("/healthz", func(c *gin.Context) { c.String(200, "ok") })
+
+	// --- API routes ---
 	api := r.Group("/api/v1")
 	{
-		api.GET("/questions", ListQuestions(db))                  // tryb nauki: pobierz pytania (paginacja/tagi w kolejnych iteracjach)
-		api.POST("/learn/answer", LearnAnswer(db))                // tryb nauki: odpowiedź -> od razu feedback + wyjaśnienia
-		api.POST("/exams", StartExam(db))                         // start egzaminu (80 pytań domyślnie)
-		api.POST("/exams/:id/answer", ExamAnswer(db))             // zapis odpowiedzi, bez ujawniania poprawności
-		api.POST("/exams/:id/finish", FinishExam(db))             // wynik + raport
+		// Learn mode
+		api.GET("/questions", ListQuestions(db))
+		api.POST("/learn/answer", LearnAnswer(db))
+
+		// Exam mode
+		api.POST("/exams", StartExam(db))
+		api.POST("/exams/:id/answer", ExamAnswer(db))
+		api.POST("/exams/:id/finish", FinishExam(db))
+
+		// User profile
 		api.GET("/me", GetMe(db))
-    	api.PUT("/me", UpdateMe(db))
+		api.PUT("/me", UpdateMe(db))
 		api.GET("/me/export-key", ExportKey(db))
-		api.POST("/me/restore", RestoreAccount(db, false)) 		  // prod: true
+		api.POST("/me/restore", RestoreAccount(db, secureCookies))
+
+		// History & stats
 		api.GET("/exams", ListMyExams(db))
 		api.GET("/exams/:id", GetMyExam(db))
 		api.GET("/stats", Stats(db))
 	}
 
+	// --- Server ---
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Listening on :%s", port)
+	log.Printf("Listening on :%s (SecureCookies=%v, GH Origin=%s)", port, secureCookies, ghOriginHttps)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("run: %v", err)
 	}
