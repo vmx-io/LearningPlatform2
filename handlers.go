@@ -241,11 +241,11 @@ func ExamAnswer(db *gorm.DB) gin.HandlerFunc {
 
 		raw, _ := json.Marshal(req.Selected)
 		ans := Answer{
-			ExamID:     examID,
-			QuestionID: qid,
+			ExamID:      examID,
+			QuestionID:  qid,
 			SelectedRaw: string(raw),
-			IsCorrect:  ok,
-			AnsweredAt: time.Now(),
+			IsCorrect:   ok,
+			AnsweredAt:  time.Now(),
 		}
 		if err := db.Create(&ans).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
@@ -278,13 +278,13 @@ func FinishExam(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		type ReviewRow struct {
-			QuestionID       string             `json:"questionId"`
-			QuestionText     string             `json:"questionText"`
-			Selected         []string           `json:"selected"`
-			Correct          []string           `json:"correct"`
-			ExplanationsEn   map[string]ExpDTO  `json:"explanationsEn"`
-			ExplanationsPl   map[string]ExpDTO  `json:"explanationsPl"`
-			WasCorrect       bool               `json:"wasCorrect"`
+			QuestionID     string            `json:"questionId"`
+			QuestionText   string            `json:"questionText"`
+			Selected       []string          `json:"selected"`
+			Correct        []string          `json:"correct"`
+			ExplanationsEn map[string]ExpDTO `json:"explanationsEn"`
+			ExplanationsPl map[string]ExpDTO `json:"explanationsPl"`
+			WasCorrect     bool              `json:"wasCorrect"`
 		}
 
 		var eqs []ExamQuestion
@@ -308,7 +308,9 @@ func FinishExam(db *gorm.DB) gin.HandlerFunc {
 				continue
 			}
 			var a Answer
-			_ = db.Where("exam_id = ? AND question_id = ?", examID, q.ID).First(&a).Error
+			_ = db.Where("exam_id = ? AND question_id = ?", examID, q.ID).
+				Order("answered_at DESC, id DESC").
+				First(&a).Error
 
 			var selected []string
 			_ = json.Unmarshal([]byte(a.SelectedRaw), &selected)
@@ -343,12 +345,12 @@ func FinishExam(db *gorm.DB) gin.HandlerFunc {
 // ===== Exam history: list & detail (read-only) =====
 
 type ExamSummaryDTO struct {
-    ID              string   `json:"id"`
-    StartedAt       time.Time `json:"startedAt"`
-    FinishedAt      *time.Time `json:"finishedAt,omitempty"`
-    DurationSec     int      `json:"durationSec"`
-    ScorePercent    *float64 `json:"scorePercent,omitempty"`
-    QuestionCount   int      `json:"questionCount"`
+	ID            string     `json:"id"`
+	StartedAt     time.Time  `json:"startedAt"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	DurationSec   int        `json:"durationSec"`
+	ScorePercent  *float64   `json:"scorePercent,omitempty"`
+	QuestionCount int        `json:"questionCount"`
 }
 
 // ListMyExams returns user exams with pagination.
@@ -368,7 +370,9 @@ func ListMyExams(db *gorm.DB) gin.HandlerFunc {
 		offset := 0
 		if l := c.Query("limit"); l != "" {
 			if n, err := strconv.Atoi(l); err == nil && n > 0 {
-				if n > 100 { n = 100 }
+				if n > 100 {
+					n = 100
+				}
 				limit = n
 			}
 		}
@@ -397,18 +401,25 @@ func ListMyExams(db *gorm.DB) gin.HandlerFunc {
 
 		// count questions per exam
 		ids := make([]string, 0, len(exams))
-		for _, e := range exams { ids = append(ids, e.ID) }
+		for _, e := range exams {
+			ids = append(ids, e.ID)
+		}
 
 		counts := map[string]int{}
 		if len(ids) > 0 {
-			type Row struct{ ExamID string; C int }
+			type Row struct {
+				ExamID string
+				C      int
+			}
 			var rows []Row
 			if err := db.Table("exam_questions").
 				Select("exam_id as exam_id, COUNT(*) as c").
 				Where("exam_id IN ?", ids).
 				Group("exam_id").
 				Scan(&rows).Error; err == nil {
-				for _, r := range rows { counts[r.ExamID] = r.C }
+				for _, r := range rows {
+					counts[r.ExamID] = r.C
+				}
 			}
 		}
 
@@ -445,97 +456,101 @@ func ListMyExams(db *gorm.DB) gin.HandlerFunc {
 }
 
 func GetMyExam(db *gorm.DB) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        examID := c.Param("id")
+	return func(c *gin.Context) {
+		examID := c.Param("id")
 
-        // auth & ownership
-        v, ok := c.Get("userDBID")
-        if !ok {
-            c.JSON(http.StatusUnauthorized, gin.H{"error":"no user"})
-            return
-        }
-        uid := v.(uint)
+		// auth & ownership
+		v, ok := c.Get("userDBID")
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "no user"})
+			return
+		}
+		uid := v.(uint)
 
-        var exam Exam
-        if err := db.First(&exam, "id = ?", examID).Error; err != nil {
-            c.JSON(http.StatusNotFound, gin.H{"error":"exam not found"})
-            return
-        }
-        if exam.UserID == nil || *exam.UserID != uid {
-            c.JSON(http.StatusForbidden, gin.H{"error":"forbidden"})
-            return
-        }
+		var exam Exam
+		if err := db.First(&exam, "id = ?", examID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "exam not found"})
+			return
+		}
+		if exam.UserID == nil || *exam.UserID != uid {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 
-        // Build the same review payload as in FinishExam (read-only)
-        type ReviewRow struct {
-            QuestionID     string            `json:"questionId"`
-            QuestionText   string            `json:"questionText"`
-            Selected       []string          `json:"selected"`
-            Correct        []string          `json:"correct"`
-            ExplanationsEn map[string]ExpDTO `json:"explanationsEn"`
-            ExplanationsPl map[string]ExpDTO `json:"explanationsPl"`
-            WasCorrect     bool              `json:"wasCorrect"`
-        }
+		// Build the same review payload as in FinishExam (read-only)
+		type ReviewRow struct {
+			QuestionID     string            `json:"questionId"`
+			QuestionText   string            `json:"questionText"`
+			Selected       []string          `json:"selected"`
+			Correct        []string          `json:"correct"`
+			ExplanationsEn map[string]ExpDTO `json:"explanationsEn"`
+			ExplanationsPl map[string]ExpDTO `json:"explanationsPl"`
+			WasCorrect     bool              `json:"wasCorrect"`
+		}
 
-        // order of questions
-        var eqs []ExamQuestion
-        if err := db.Where("exam_id = ?", examID).Order("position").Find(&eqs).Error; err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error":"db"})
-            return
-        }
+		// order of questions
+		var eqs []ExamQuestion
+		if err := db.Where("exam_id = ?", examID).Order("position").Find(&eqs).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
+			return
+		}
 
-        // helper
-        toMap := func(xs []Explanation) map[string]ExpDTO {
-            m := map[string]ExpDTO{}
-            for _, e := range xs {
-                m[e.OptionKey] = ExpDTO{Text: e.Text, URL: e.URL}
-            }
-            return m
-        }
+		// helper
+		toMap := func(xs []Explanation) map[string]ExpDTO {
+			m := map[string]ExpDTO{}
+			for _, e := range xs {
+				m[e.OptionKey] = ExpDTO{Text: e.Text, URL: e.URL}
+			}
+			return m
+		}
 
-        review := []ReviewRow{}
-        correctCount := 0
-        for _, eq := range eqs {
-            var q Question
-            if err := db.First(&q, "id = ?", eq.QuestionID).Error; err != nil {
-                continue
-            }
-            var a Answer
-            _ = db.Where("exam_id = ? AND question_id = ?", examID, q.ID).First(&a).Error
+		review := []ReviewRow{}
+		correctCount := 0
+		for _, eq := range eqs {
+			var q Question
+			if err := db.First(&q, "id = ?", eq.QuestionID).Error; err != nil {
+				continue
+			}
+			var a Answer
+			_ = db.Where("exam_id = ? AND question_id = ?", examID, q.ID).
+				Order("answered_at DESC, id DESC").
+				First(&a).Error
 
-            var selected []string
-            _ = json.Unmarshal([]byte(a.SelectedRaw), &selected)
-            correctKeys, _ := computeCorrectKeys(db, q.ID)
-            if a.IsCorrect { correctCount++ }
+			var selected []string
+			_ = json.Unmarshal([]byte(a.SelectedRaw), &selected)
+			correctKeys, _ := computeCorrectKeys(db, q.ID)
+			if a.IsCorrect {
+				correctCount++
+			}
 
-            var exEN, exPL []Explanation
-            _ = db.Where("question_id = ? AND lang = 'en'", q.ID).Find(&exEN).Error
-            _ = db.Where("question_id = ? AND lang = 'pl'", q.ID).Find(&exPL).Error
+			var exEN, exPL []Explanation
+			_ = db.Where("question_id = ? AND lang = 'en'", q.ID).Find(&exEN).Error
+			_ = db.Where("question_id = ? AND lang = 'pl'", q.ID).Find(&exPL).Error
 
-            review = append(review, ReviewRow{
-                QuestionID:     q.ID,
-                QuestionText:   q.TextEN,
-                Selected:       selected,
-                Correct:        correctKeys,
-                ExplanationsEn: toMap(exEN),
-                ExplanationsPl: toMap(exPL),
-                WasCorrect:     a.IsCorrect,
-            })
-        }
+			review = append(review, ReviewRow{
+				QuestionID:     q.ID,
+				QuestionText:   q.TextEN,
+				Selected:       selected,
+				Correct:        correctKeys,
+				ExplanationsEn: toMap(exEN),
+				ExplanationsPl: toMap(exPL),
+				WasCorrect:     a.IsCorrect,
+			})
+		}
 
-        var total int64
-        _ = db.Model(&Answer{}).Where("exam_id = ?", examID).Count(&total).Error
+		var totalQ int64
+		_ = db.Model(&ExamQuestion{}).Where("exam_id = ?", examID).Count(&totalQ).Error
 
-        c.JSON(http.StatusOK, gin.H{
-            "examId":       exam.ID,
-            "startedAt":    exam.StartedAt,
-            "finishedAt":   exam.FinishedAt,
-            "durationSec":  exam.DurationSeconds,
-            "scorePercent": exam.ScorePercent,
+		c.JSON(http.StatusOK, gin.H{
+			"examId":       exam.ID,
+			"startedAt":    exam.StartedAt,
+			"finishedAt":   exam.FinishedAt,
+			"durationSec":  exam.DurationSeconds,
+			"scorePercent": exam.ScorePercent,
 			"passed":       passedPtr(exam.ScorePercent),
-            "correct":      correctCount,
-            "wrong":        int(total) - correctCount,
-            "items":        review,
-        })
-    }
+			"correct":      correctCount,
+			"wrong":        int(totalQ) - correctCount,
+			"items":        review,
+		})
+	}
 }
